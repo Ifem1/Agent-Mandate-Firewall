@@ -29,14 +29,28 @@ Deterministic code handles all roles, caps, accounting, state transitions, resul
 
 Equivalence principle:
 
-> Compare leader and validator outputs as semantic judgements about whether the same public evidence supports the same requested agent payment under the same mandate policy. Equivalent outputs preserve the same verdict, confidence band, supported amount band, material merchant or service summary, policy-fit reason, and abstention reason. Different wording, ordering, casing, or style is equivalent when meaning is unchanged. A different verdict, amount band, named recipient, merchant, purpose, policy fit, or error reason is not equivalent. UNKNOWN is equivalent only to UNKNOWN for substantially the same reason, such as fetch failure, ambiguity, insufficient evidence, unreadable evidence, or missing amount/purpose details.
+> Compare leader and validator outputs as semantic judgements about whether the same public evidence supports the same requested agent payment under the same mandate policy. Equivalent outputs preserve the same verdict, confidence band, exact approved_amount integer, exact recipient_address, material merchant or service summary, policy-fit reason, and abstention reason. Different wording, ordering, casing, or style is equivalent when meaning is unchanged. A different verdict, approved amount, recipient address, named recipient, merchant, purpose, policy fit, or error reason is not equivalent. UNKNOWN is equivalent only to UNKNOWN for substantially the same reason, such as fetch failure, ambiguity, insufficient evidence, unreadable evidence, or missing exact amount, recipient, or purpose details.
+
+## Review Fix: Exact Payout Consensus
+
+The rejected version allowed consensus equivalence over a supported amount band while the contract later transferred the exact `approved_amount`. It also did not require the recipient address to appear in the judgement. That could let validator-compatible outputs approve different payable sums or fail to bind the evidence to the recipient.
+
+The patched contract fixes this by requiring the consensus judgement to include:
+
+- exact integer `approved_amount`
+- exact `recipient_address`
+- evidence-backed merchant/service summary
+- policy-fit reason
+
+An `APPROVED` result now fails closed to `UNKNOWN` unless `recipient_address` exactly equals the stored payment recipient. If the model returns an amount greater than the requested payment, the result also becomes `UNKNOWN`; the contract no longer clamps a different consensus amount into the transferred amount.
 
 ## Safety Rules
 
 - Fetch failure is `UNKNOWN`, never `REJECTED`.
 - Low-confidence approvals become `UNKNOWN`.
 - Unparseable model output becomes `UNKNOWN`.
-- The model cannot approve more than the requested amount; deterministic code clamps it.
+- Recipient-free or wrong-recipient approvals become `UNKNOWN`.
+- Over-requested approvals become `UNKNOWN`; the contract never silently changes the consensus amount before payout.
 - State is written before value leaves.
 - `APPROVED` funds go to the recipient; `REJECTED` and `UNKNOWN` funds return to the mandate; unused mandate funds can be reclaimed by the principal.
 
@@ -116,7 +130,7 @@ genvm-lint check contracts\agent_mandate_firewall.py --json
 genvm-lint check examples\mandate_wallet_consumer.py --json
 ```
 
-Latest local result: `40 passed`; both lints `ok: true`.
+Latest local result: `42 passed`; both lints `ok: true`.
 
 StudioNet:
 

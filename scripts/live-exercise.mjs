@@ -21,6 +21,8 @@ const client = createClient({ chain: chains.studionet, account });
 const code = fs.readFileSync("contracts/agent_mandate_firewall.py", "utf8");
 const zero = "0x0000000000000000000000000000000000000000";
 const addr = account.address;
+const evidenceUrl =
+  "https://raw.githubusercontent.com/Ifem1/Agent-Mandate-Firewall/main/evidence/example-domain-payment.txt";
 
 async function wait(hash, label, retries = 90) {
   const receipt = await client.waitForTransactionReceipt({
@@ -70,7 +72,7 @@ if (!contract) {
 }
 
 const policy =
-  "Allow tiny payments for public web documentation checks when the public evidence page identifies itself as Example Domain and the purpose says Example Domain documentation.";
+  "Allow tiny payments for public web documentation checks when the public evidence identifies the service, exact amount, recipient address, and purpose.";
 
 const openHash = await write(contract, "open_mandate", [addr, policy, 5, zero], 10n);
 const mandateId = "amf-m-1";
@@ -89,7 +91,7 @@ const requestHash = await write(contract, "request_payment", [
   1,
   addr,
   "Pay for Example Domain documentation verification.",
-  "https://example.com",
+  evidenceUrl,
   "live-example-domain",
 ]);
 const paymentId = await client.readContract({

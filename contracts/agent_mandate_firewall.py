@@ -30,13 +30,14 @@ MANDATE_EQUIVALENCE_PRINCIPLE = """
 Compare leader and validator outputs as semantic judgements about whether the
 same public evidence supports the same requested agent payment under the same
 mandate policy. Equivalent outputs preserve the same verdict, confidence band,
-supported amount band, material merchant or service summary, policy-fit reason,
-and abstention reason. Different wording, ordering, casing, or style is
-equivalent when meaning is unchanged. A different verdict, amount band, named
-recipient, merchant, purpose, policy fit, or error reason is not equivalent.
-UNKNOWN is equivalent only to UNKNOWN for substantially the same reason, such as
-fetch failure, ambiguity, insufficient evidence, unreadable evidence, or missing
-amount/purpose details.
+exact approved_amount integer, exact recipient_address, material merchant or
+service summary, policy-fit reason, and abstention reason. Different wording,
+ordering, casing, or style is equivalent when meaning is unchanged. A different
+verdict, approved amount, recipient address, named recipient, merchant, purpose,
+policy fit, or error reason is not equivalent. UNKNOWN is equivalent only to
+UNKNOWN for substantially the same reason, such as fetch failure, ambiguity,
+insufficient evidence, unreadable evidence, or missing exact amount, recipient,
+or purpose details.
 """
 
 
@@ -88,6 +89,7 @@ class PaymentRecord:
     evidence_url: str
     requested_amount: u256
     approved_amount: u256
+    approved_recipient: Address
     status: str
     confidence: str
     merchant_summary: str
@@ -204,7 +206,23 @@ def _parse_u256(value) -> u256:
     return u256(0)
 
 
-def _parse_result(raw, requested_amount: u256, summary_limit: int) -> dict:
+def _zero_address() -> Address:
+    return Address("0x0000000000000000000000000000000000000000")
+
+
+def _safe_parse_address(value) -> Address:
+    if not isinstance(value, str):
+        return _zero_address()
+    cleaned = value.strip()
+    if len(cleaned) != 42 or not cleaned.startswith("0x"):
+        return _zero_address()
+    try:
+        return Address(cleaned)
+    except Exception:
+        return _zero_address()
+
+
+def _parse_result(raw, requested_amount: u256, expected_recipient: Address, summary_limit: int) -> dict:
     if isinstance(raw, dict):
         obj = raw
         raw_summary = json.dumps(raw, sort_keys=True)
@@ -216,6 +234,7 @@ def _parse_result(raw, requested_amount: u256, summary_limit: int) -> dict:
                 "verdict": PAYMENT_UNKNOWN,
                 "confidence": CONF_NONE,
                 "approved_amount": u256(0),
+                "approved_recipient": _zero_address(),
                 "merchant_summary": "",
                 "policy_reason": "",
                 "error_code": ERROR_LLM,
@@ -228,6 +247,7 @@ def _parse_result(raw, requested_amount: u256, summary_limit: int) -> dict:
                 "verdict": PAYMENT_UNKNOWN,
                 "confidence": CONF_NONE,
                 "approved_amount": u256(0),
+                "approved_recipient": _zero_address(),
                 "merchant_summary": "",
                 "policy_reason": "",
                 "error_code": ERROR_LLM,
@@ -238,6 +258,7 @@ def _parse_result(raw, requested_amount: u256, summary_limit: int) -> dict:
             "verdict": PAYMENT_UNKNOWN,
             "confidence": CONF_NONE,
             "approved_amount": u256(0),
+            "approved_recipient": _zero_address(),
             "merchant_summary": "",
             "policy_reason": "",
             "error_code": ERROR_LLM,
@@ -247,17 +268,26 @@ def _parse_result(raw, requested_amount: u256, summary_limit: int) -> dict:
     verdict = _normalize_verdict(obj.get("verdict"))
     confidence = _normalize_confidence(obj.get("confidence"), verdict)
     approved_amount = _parse_u256(obj.get("approved_amount"))
+    approved_recipient = _safe_parse_address(obj.get("recipient_address"))
     merchant_summary = _clean_text(obj.get("merchant_summary"), summary_limit)
     policy_reason = _clean_text(obj.get("policy_reason"), summary_limit)
     error_code = _normalize_error(obj.get("error_code"), verdict)
 
-    if approved_amount > requested_amount:
-        approved_amount = requested_amount
+    if verdict == PAYMENT_APPROVED and approved_amount > requested_amount:
+        verdict = PAYMENT_UNKNOWN
+        confidence = CONF_NONE
+        approved_amount = u256(0)
+        error_code = ERROR_EXPECTED
     if verdict == PAYMENT_APPROVED and approved_amount == u256(0):
         verdict = PAYMENT_UNKNOWN
         confidence = CONF_NONE
         error_code = ERROR_EXPECTED
     if verdict == PAYMENT_APPROVED and confidence != CONF_HIGH:
+        verdict = PAYMENT_UNKNOWN
+        confidence = CONF_NONE
+        approved_amount = u256(0)
+        error_code = ERROR_EXPECTED
+    if verdict == PAYMENT_APPROVED and approved_recipient != expected_recipient:
         verdict = PAYMENT_UNKNOWN
         confidence = CONF_NONE
         approved_amount = u256(0)
@@ -273,11 +303,13 @@ def _parse_result(raw, requested_amount: u256, summary_limit: int) -> dict:
         error_code = ERROR_EXPECTED
     if verdict != PAYMENT_APPROVED:
         approved_amount = u256(0)
+        approved_recipient = _zero_address()
 
     return {
         "verdict": verdict,
         "confidence": confidence,
         "approved_amount": approved_amount,
+        "approved_recipient": approved_recipient,
         "merchant_summary": merchant_summary,
         "policy_reason": policy_reason,
         "error_code": error_code,
@@ -452,6 +484,7 @@ class AgentMandateFirewall(gl.Contract):
             evidence_url=clean_url,
             requested_amount=requested,
             approved_amount=u256(0),
+            approved_recipient=_zero_address(),
             status=PAYMENT_PENDING,
             confidence=CONF_NONE,
             merchant_summary="",
@@ -489,9 +522,10 @@ class AgentMandateFirewall(gl.Contract):
         purpose = str(payment.purpose)
         evidence_url = str(payment.evidence_url)
         requested_amount = payment.requested_amount
+        recipient = payment.recipient
         summary_limit = int(self.max_summary_chars)
 
-        result = self._judge_payment(policy, purpose, evidence_url, requested_amount, summary_limit)
+        result = self._judge_payment(policy, purpose, evidence_url, requested_amount, recipient, summary_limit)
         payment.attempts = payment.attempts + u256(1)
 
         if result["verdict"] == PAYMENT_UNKNOWN and payment.attempts < self.max_attempts:
@@ -505,6 +539,7 @@ class AgentMandateFirewall(gl.Contract):
         payment.status = result["verdict"]
         payment.confidence = result["confidence"]
         payment.approved_amount = result["approved_amount"]
+        payment.approved_recipient = result["approved_recipient"]
         payment.merchant_summary = result["merchant_summary"]
         payment.policy_reason = result["policy_reason"]
         payment.error_code = result["error_code"]
@@ -611,6 +646,7 @@ class AgentMandateFirewall(gl.Contract):
             "evidence_url": payment.evidence_url,
             "requested_amount": int(payment.requested_amount),
             "approved_amount": int(payment.approved_amount),
+            "approved_recipient": payment.approved_recipient.as_hex,
             "status": payment.status,
             "confidence": payment.confidence,
             "merchant_summary": payment.merchant_summary,
@@ -674,9 +710,10 @@ class AgentMandateFirewall(gl.Contract):
         purpose: str,
         evidence_url: str,
         requested_amount: u256,
+        recipient: Address,
         summary_limit: int,
     ) -> dict:
-        prompt = self._build_prompt(policy, purpose, evidence_url, requested_amount)
+        prompt = self._build_prompt(policy, purpose, evidence_url, requested_amount, recipient)
 
         def leader():
             try:
@@ -707,10 +744,10 @@ class AgentMandateFirewall(gl.Contract):
             return gl.nondet.exec_prompt(prompt + "\nEvidence:\n" + body[:7000])
 
         raw = gl.eq_principle.prompt_comparative(leader, MANDATE_EQUIVALENCE_PRINCIPLE)
-        return _parse_result(raw, requested_amount, summary_limit)
+        return _parse_result(raw, requested_amount, recipient, summary_limit)
 
     def _build_prompt(
-        self, policy: str, purpose: str, evidence_url: str, requested_amount: u256
+        self, policy: str, purpose: str, evidence_url: str, requested_amount: u256, recipient: Address
     ) -> str:
         return (
             "You are judging a delegated agent payment for a GenLayer Agent Mandate Firewall. "
@@ -723,12 +760,17 @@ class AgentMandateFirewall(gl.Contract):
             + evidence_url
             + "\nRequested amount in wei: "
             + str(int(requested_amount))
+            + "\nRequested recipient address: "
+            + recipient.as_hex
             + "\nReturn one compact JSON object with keys verdict, confidence, approved_amount, "
-            + "merchant_summary, policy_reason, error_code. verdict must be APPROVED, REJECTED, "
+            + "recipient_address, merchant_summary, policy_reason, error_code. verdict must be APPROVED, REJECTED, "
             + "or UNKNOWN. Use APPROVED only when the evidence clearly shows the payment is within "
-            + "the mandate policy and the amount is supported by the evidence. Use REJECTED only "
-            + "when the evidence clearly contradicts the mandate or requested purpose. Use UNKNOWN "
-            + "for missing, ambiguous, inaccessible, or insufficient evidence. approved_amount must "
-            + "be an integer in wei and must not exceed the requested amount. confidence must be "
+            + "the mandate policy, the exact approved_amount is supported by the evidence, and the "
+            + "evidence binds that payment to the requested recipient address. Use REJECTED only "
+            + "when the evidence clearly contradicts the mandate, requested purpose, amount, or "
+            + "recipient. Use UNKNOWN for missing, ambiguous, inaccessible, or insufficient evidence. "
+            + "approved_amount must be one exact integer in wei and must not exceed the requested "
+            + "amount. recipient_address must equal the requested recipient address for APPROVED; "
+            + "otherwise use UNKNOWN unless the evidence clearly contradicts the recipient. confidence must be "
             + "HIGH, MEDIUM, LOW, or NONE. error_code must be NONE, EXTERNAL, LLM_ERROR, or EXPECTED."
         )

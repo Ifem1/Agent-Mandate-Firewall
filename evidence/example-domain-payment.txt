@@ -1,0 +1,6 @@
+Invoice: Example Domain Documentation Verification
+Merchant: Example Domain Documentation Service
+Recipient address: 0xa24Ddf60F3a76Ce6f3d491B657b7965Ff8cc6375
+Amount: 1 wei
+Purpose: Pay for Example Domain documentation verification.
+Policy fit: This is a tiny payment for a public web documentation check.

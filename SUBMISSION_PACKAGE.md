@@ -6,7 +6,7 @@ Agent Mandate Firewall
 
 ## Description
 
-AgentMandateFirewall turns delegated agent spending into a reusable consensus primitive: a principal deposits GEN, names an agent and policy, and public invoice/API evidence must satisfy that mandate before payment becomes withdrawable. It is not a bonded dispute contract or visual checker; the judgement controls principal-funded agent authority. StudioNet run: payment `amf-p-1` against `https://example.com` resolved `APPROVED` with `HIGH` confidence, then withdrew. Local verification: 40 direct tests passed; primitive and consumer lints are clean.
+AgentMandateFirewall turns delegated agent spending into a reusable consensus primitive: a principal deposits GEN, names an agent and policy, and public invoice/API evidence must satisfy that mandate before payment becomes withdrawable. Review fix: payout consensus now requires exact `approved_amount` agreement and exact `recipient_address` binding. Wrong-recipient, missing-recipient, or over-requested approvals fail closed to `UNKNOWN`; no consensus amount is silently clamped before payout. Local verification: 42 direct tests passed; primitive and consumer lints are clean.
 
 ## Evidence
 
@@ -27,7 +27,7 @@ AgentMandateFirewall turns delegated agent spending into a reusable consensus pr
 
 ## Verification
 
-- `pytest tests/direct/ -q`: `40 passed`
+- `pytest tests/direct/ -q`: `42 passed`
 - `genvm-lint check contracts\agent_mandate_firewall.py --json`: `ok: true`
 - `genvm-lint check examples\mandate_wallet_consumer.py --json`: `ok: true`
 

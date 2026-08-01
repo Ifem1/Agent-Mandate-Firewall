@@ -9,13 +9,6 @@ from tests.conftest import (
 )
 
 
-APPROVED_JSON = (
-    '{"verdict":"APPROVED","confidence":"HIGH","approved_amount":120,'
-    '"merchant_summary":"HelpDesk Pro invoice for support SaaS",'
-    '"policy_reason":"Customer-support SaaS is allowed by the mandate",'
-    '"error_code":"NONE"}'
-)
-
 REJECTED_JSON = (
     '{"verdict":"REJECTED","confidence":"HIGH","approved_amount":0,'
     '"merchant_summary":"Luxury hotel booking",'
@@ -27,6 +20,18 @@ UNKNOWN_JSON = (
     '{"verdict":"UNKNOWN","confidence":"NONE","approved_amount":0,'
     '"merchant_summary":"","policy_reason":"","error_code":"EXPECTED"}'
 )
+
+
+def approved_json(recipient, amount=120):
+    return (
+        '{"verdict":"APPROVED","confidence":"HIGH","approved_amount":'
+        + str(amount)
+        + ',"recipient_address":"'
+        + as_hex_address(recipient)
+        + '","merchant_summary":"HelpDesk Pro invoice for support SaaS",'
+        + '"policy_reason":"Customer-support SaaS is allowed by the mandate",'
+        + '"error_code":"NONE"}'
+    )
 
 
 def test_constructor_exposes_config(direct_deploy):
@@ -204,7 +209,7 @@ def test_approved_payment_becomes_recipient_withdrawable(
     contract = deploy_firewall(direct_deploy)
     mandate_id = open_mandate(direct_vm, contract, direct_alice, value=1000)
     payment_id = request_payment(direct_vm, contract, direct_alice, mandate_id, direct_bob)
-    mock_evidence_and_llm(direct_vm, APPROVED_JSON)
+    mock_evidence_and_llm(direct_vm, approved_json(direct_bob))
     contract.resolve_payment(payment_id)
     payment = contract.get_payment(payment_id)
     mandate = contract.get_mandate(mandate_id)
@@ -216,14 +221,49 @@ def test_approved_payment_becomes_recipient_withdrawable(
     assert contract.withdrawable(payment_id, as_hex_address(direct_bob)) == 120
 
 
-def test_model_cannot_approve_more_than_requested(direct_deploy, direct_vm, direct_alice, direct_bob):
-    contract = deploy_firewall(direct_deploy)
+def test_over_requested_approval_is_unknown_not_clamped(direct_deploy, direct_vm, direct_alice, direct_bob):
+    contract = deploy_firewall(direct_deploy, max_attempts=1)
     mandate_id = open_mandate(direct_vm, contract, direct_alice)
     payment_id = request_payment(direct_vm, contract, direct_alice, mandate_id, direct_bob, amount=120)
-    inflated = APPROVED_JSON.replace('"approved_amount":120', '"approved_amount":999999')
-    mock_evidence_and_llm(direct_vm, inflated)
+    mock_evidence_and_llm(direct_vm, approved_json(direct_bob, amount=999999))
     contract.resolve_payment(payment_id)
-    assert contract.get_payment(payment_id)["approved_amount"] == 120
+    payment = contract.get_payment(payment_id)
+    mandate = contract.get_mandate(mandate_id)
+    assert payment["status"] == "UNKNOWN"
+    assert payment["approved_amount"] == 0
+    assert mandate["reserved"] == 0
+    assert mandate["available"] == 1000
+
+
+def test_approval_requires_exact_recipient_binding(direct_deploy, direct_vm, direct_alice, direct_bob, direct_charlie):
+    contract = deploy_firewall(direct_deploy, max_attempts=1)
+    mandate_id = open_mandate(direct_vm, contract, direct_alice)
+    payment_id = request_payment(direct_vm, contract, direct_alice, mandate_id, direct_bob)
+    mock_evidence_and_llm(direct_vm, approved_json(direct_charlie))
+    contract.resolve_payment(payment_id)
+    payment = contract.get_payment(payment_id)
+    mandate = contract.get_mandate(mandate_id)
+    assert payment["status"] == "UNKNOWN"
+    assert payment["approved_amount"] == 0
+    assert payment["approved_recipient"] == "0x0000000000000000000000000000000000000000"
+    assert mandate["reserved"] == 0
+    assert mandate["available"] == 1000
+
+
+def test_approval_requires_recipient_in_judgement(direct_deploy, direct_vm, direct_alice, direct_bob):
+    contract = deploy_firewall(direct_deploy, max_attempts=1)
+    mandate_id = open_mandate(direct_vm, contract, direct_alice)
+    payment_id = request_payment(direct_vm, contract, direct_alice, mandate_id, direct_bob)
+    missing_recipient = (
+        '{"verdict":"APPROVED","confidence":"HIGH","approved_amount":120,'
+        '"merchant_summary":"HelpDesk Pro invoice for support SaaS",'
+        '"policy_reason":"Customer-support SaaS is allowed by the mandate",'
+        '"error_code":"NONE"}'
+    )
+    mock_evidence_and_llm(direct_vm, missing_recipient)
+    contract.resolve_payment(payment_id)
+    assert contract.payment_status(payment_id) == "UNKNOWN"
+    assert contract.withdrawable(payment_id, as_hex_address(direct_bob)) == 0
 
 
 def test_rejected_payment_returns_reserved_budget(direct_deploy, direct_vm, direct_alice, direct_bob):
@@ -266,7 +306,7 @@ def test_external_fetch_failure_is_unknown_not_rejected(direct_deploy, direct_vm
     contract = deploy_firewall(direct_deploy, max_attempts=1)
     mandate_id = open_mandate(direct_vm, contract, direct_alice)
     payment_id = request_payment(direct_vm, contract, direct_alice, mandate_id, direct_bob)
-    mock_evidence_and_llm(direct_vm, APPROVED_JSON, status=500)
+    mock_evidence_and_llm(direct_vm, approved_json(direct_bob), status=500)
     contract.resolve_payment(payment_id)
     payment = contract.get_payment(payment_id)
     assert payment["status"] == "UNKNOWN"
@@ -286,7 +326,7 @@ def test_low_confidence_approval_is_unknown(direct_deploy, direct_vm, direct_ali
     contract = deploy_firewall(direct_deploy, max_attempts=1)
     mandate_id = open_mandate(direct_vm, contract, direct_alice)
     payment_id = request_payment(direct_vm, contract, direct_alice, mandate_id, direct_bob)
-    mock_evidence_and_llm(direct_vm, APPROVED_JSON.replace('"HIGH"', '"MEDIUM"'))
+    mock_evidence_and_llm(direct_vm, approved_json(direct_bob).replace('"HIGH"', '"MEDIUM"'))
     contract.resolve_payment(payment_id)
     assert contract.payment_status(payment_id) == "UNKNOWN"
 
@@ -301,7 +341,7 @@ def test_terminal_payment_cannot_resolve_again(direct_deploy, direct_vm, direct_
     contract = deploy_firewall(direct_deploy)
     mandate_id = open_mandate(direct_vm, contract, direct_alice)
     payment_id = request_payment(direct_vm, contract, direct_alice, mandate_id, direct_bob)
-    mock_evidence_and_llm(direct_vm, APPROVED_JSON)
+    mock_evidence_and_llm(direct_vm, approved_json(direct_bob))
     contract.resolve_payment(payment_id)
     with direct_vm.expect_revert("payment terminal"):
         contract.resolve_payment(payment_id)
@@ -319,7 +359,7 @@ def test_only_recipient_can_withdraw(direct_deploy, direct_vm, direct_alice, dir
     contract = deploy_firewall(direct_deploy)
     mandate_id = open_mandate(direct_vm, contract, direct_alice)
     payment_id = request_payment(direct_vm, contract, direct_alice, mandate_id, direct_bob)
-    mock_evidence_and_llm(direct_vm, APPROVED_JSON)
+    mock_evidence_and_llm(direct_vm, approved_json(direct_bob))
     contract.resolve_payment(payment_id)
     with direct_vm.prank(direct_charlie):
         with direct_vm.expect_revert("only recipient"):
@@ -330,7 +370,7 @@ def test_withdraw_writes_state_before_value_path(direct_deploy, direct_vm, direc
     contract = deploy_firewall(direct_deploy)
     mandate_id = open_mandate(direct_vm, contract, direct_alice)
     payment_id = request_payment(direct_vm, contract, direct_alice, mandate_id, direct_bob)
-    mock_evidence_and_llm(direct_vm, APPROVED_JSON)
+    mock_evidence_and_llm(direct_vm, approved_json(direct_bob))
     contract.resolve_payment(payment_id)
     with direct_vm.prank(direct_bob):
         contract.withdraw(payment_id)
@@ -345,7 +385,7 @@ def test_double_withdraw_reverts(direct_deploy, direct_vm, direct_alice, direct_
     contract = deploy_firewall(direct_deploy)
     mandate_id = open_mandate(direct_vm, contract, direct_alice)
     payment_id = request_payment(direct_vm, contract, direct_alice, mandate_id, direct_bob)
-    mock_evidence_and_llm(direct_vm, APPROVED_JSON)
+    mock_evidence_and_llm(direct_vm, approved_json(direct_bob))
     contract.resolve_payment(payment_id)
     with direct_vm.prank(direct_bob):
         contract.withdraw(payment_id)
