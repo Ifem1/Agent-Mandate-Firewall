@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 artifacts/
 .deploy-secrets.json
+.amf-deploy-secrets.json

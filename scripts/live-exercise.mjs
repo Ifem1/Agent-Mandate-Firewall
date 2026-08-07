@@ -7,7 +7,7 @@ import {
 } from "file:///C:/Users/DELL/AppData/Roaming/npm/node_modules/genlayer/node_modules/genlayer-js/dist/index.js";
 
 const secretsRaw = fs
-  .readFileSync("../visual-state-gate/.deploy-secrets.json", "utf8")
+  .readFileSync(".amf-deploy-secrets.json", "utf8")
   .replace(/^\uFEFF/, "");
 const secrets = JSON.parse(secretsRaw);
 const keystore = fs.readFileSync(
@@ -54,6 +54,8 @@ async function write(address, functionName, args, value = 0n, retries = 90) {
 }
 
 console.log("account", addr);
+
+// Deploy fresh contract
 const deployHash = await client.deployContract({
   account,
   code,
@@ -70,10 +72,12 @@ if (!contract) {
   console.log("deploy receipt keys", Object.keys(deployReceipt));
   throw new Error("could not find deployed contract address in receipt");
 }
+console.log("contractAddress", contract);
 
 const policy =
   "Allow tiny payments for public web documentation checks when the public evidence identifies the service, exact amount, recipient address, and purpose.";
 
+// open_mandate (payable: deposit 10 wei, max_payment 5)
 const openHash = await write(contract, "open_mandate", [addr, policy, 5, zero], 10n);
 const mandateId = "amf-m-1";
 console.log("mandate", JSON.stringify(await client.readContract({
@@ -82,10 +86,16 @@ console.log("mandate", JSON.stringify(await client.readContract({
   args: [mandateId],
 }), null, 2));
 
+// fund_mandate (payable: add 5 more wei)
 const fundHash = await write(contract, "fund_mandate", [mandateId], 5n);
+
+// pause_mandate
 const pauseHash = await write(contract, "pause_mandate", [mandateId]);
+
+// resume_mandate
 const resumeHash = await write(contract, "resume_mandate", [mandateId]);
 
+// request_payment
 const requestHash = await write(contract, "request_payment", [
   mandateId,
   1,
@@ -97,7 +107,7 @@ const requestHash = await write(contract, "request_payment", [
 const paymentId = await client.readContract({
   address: contract,
   functionName: "latest_payment_for",
-  args: ["live-example-domain"],
+  args: [mandateId, "live-example-domain"],
 });
 console.log("paymentId", paymentId);
 console.log("afterRequest", JSON.stringify(await client.readContract({
@@ -106,6 +116,23 @@ console.log("afterRequest", JSON.stringify(await client.readContract({
   args: [paymentId],
 }), null, 2));
 
+// Verify replay protection: second request with same key should fail gracefully
+// (we don't expect_revert here; just log what happens)
+try {
+  await write(contract, "request_payment", [
+    mandateId,
+    1,
+    addr,
+    "Duplicate request to test replay protection.",
+    evidenceUrl,
+    "live-example-domain",
+  ]);
+  console.log("WARN: replay was not rejected on-chain");
+} catch (e) {
+  console.log("replay correctly rejected:", e.message?.slice(0, 120));
+}
+
+// resolve_payment
 const resolveHash = await write(contract, "resolve_payment", [paymentId], 0n, 120);
 const afterResolve = await client.readContract({
   address: contract,
@@ -114,6 +141,7 @@ const afterResolve = await client.readContract({
 });
 console.log("afterResolve", JSON.stringify(afterResolve, null, 2));
 
+// withdraw (if approved)
 let withdrawHash = "";
 const withdrawable = await client.readContract({
   address: contract,
@@ -125,7 +153,10 @@ if ((withdrawable?.toString?.() ?? String(withdrawable)) !== "0") {
   withdrawHash = await write(contract, "withdraw", [paymentId]);
 }
 
+// reclaim_available
 const reclaimHash = await write(contract, "reclaim_available", [mandateId, 1]);
+
+// Read every view
 const finalMandate = await client.readContract({
   address: contract,
   functionName: "get_mandate",
@@ -141,6 +172,16 @@ const config = await client.readContract({
   functionName: "get_config",
   args: [],
 });
+const mandateStatus = await client.readContract({
+  address: contract,
+  functionName: "mandate_status",
+  args: [mandateId],
+});
+const paymentStatus = await client.readContract({
+  address: contract,
+  functionName: "payment_status",
+  args: [paymentId],
+});
 
 console.log("summary", JSON.stringify({
   contract,
@@ -155,6 +196,8 @@ console.log("summary", JSON.stringify({
   reclaimHash,
   mandateId,
   paymentId,
+  mandateStatus,
+  paymentStatus,
   finalStatus: finalPayment.status,
   finalPayment,
   finalMandate,

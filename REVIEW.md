@@ -1,83 +1,53 @@
-# Review Response: Exact Payout And Recipient Binding
+# Review Response: Payment Key Replay Protection
 
 ## Review Request
 
-The team rejected the previous Agent Mandate Firewall version because payout consensus was not safe enough:
+Requested by Joaquin on Aug 4, 2026 14:31 — status: More information requested.
 
-> The payout consensus is not safe yet: the equivalence rule accepts a supported amount band, but the exact approved amount is later transferred, so validator-compatible outputs can move different sums. The recipient address is also absent from the judgment. Please require agreement on the exact payable amount and include and bind the recipient to the evidence before resubmitting matching source and deployment.
+> The evidence fetch, consensus checks, and escrow flow are substantive, but the payment key currently has no replay protection: the same key can create multiple payable records, and another mandate can overwrite the global latest-payment lookup. Please scope keys to a mandate and enforce idempotency or uniqueness, then provide matching repository and deployed source.
 
 ## Fix Summary
 
-The patched contract requires consensus on the exact payable amount and the exact recipient address.
+`request_key` is now scoped per mandate and enforced unique within that mandate.
 
 Before:
 
-- Equivalence allowed a supported amount band.
-- The LLM result did not include `recipient_address`.
-- The parser clamped over-requested `approved_amount` down to the requested amount.
+- `latest_payment_by_key` was keyed only by the raw `request_key`, global across all mandates.
+- Two different mandates using the same `request_key` string would silently overwrite each other's `latest_payment_for` lookup.
+- Nothing stopped the same `request_key` from being reused on the same mandate to create additional payable `PaymentRecord`s.
 
 After:
 
-- Equivalence requires the exact integer `approved_amount`.
-- The prompt requires `recipient_address`.
-- `APPROVED` fails closed to `UNKNOWN` unless `recipient_address` exactly equals the stored payment recipient.
-- Over-requested approvals fail closed to `UNKNOWN`; the contract no longer clamps one consensus amount into a different transferred amount.
+- Every stored key is scoped as `mandate_id + "\x1f" + request_key` before being written to `latest_payment_by_key`, so two mandates can safely reuse the same human-provided key without collision.
+- `request_payment` now rejects a repeat of an already-used scoped key with `"request_key already used for this mandate"`, so a caller cannot mint a second payable record under the same idempotency key.
+- `latest_payment_for` now takes `(mandate_id, request_key)` and reads the scoped key, matching the write side.
 
 ## Code Changes
 
 Changed in `contracts/agent_mandate_firewall.py`:
 
-- Updated `MANDATE_EQUIVALENCE_PRINCIPLE` from amount-band agreement to exact approved amount and exact recipient agreement.
-- Added `approved_recipient` storage to `PaymentRecord`.
-- Added recipient parsing and deterministic recipient equality checks.
-- Passed the requested recipient into `_judge_payment`, `_build_prompt`, and `_parse_result`.
-- Updated the prompt to require evidence-backed `recipient_address`.
-- Removed silent amount clamping for over-requested approvals.
+- `request_payment`: computes `scoped_key = clean_mandate_id + "\x1f" + clean_key`, reverts if `scoped_key` already exists in `latest_payment_by_key`, and stores under `scoped_key` instead of the raw key.
+- `latest_payment_for(mandate_id, request_key)`: new signature, resolves against the scoped key.
+
+Updated call sites and docs to match the new `latest_payment_for` signature: `README.md`, `examples/mandate_wallet_consumer.py`, `scripts/live-exercise.mjs`, `tests/direct/test_agent_mandate_firewall.py`.
 
 ## Regression Tests
 
-Added or updated direct tests:
+Added:
 
-- `test_over_requested_approval_is_unknown_not_clamped`
-- `test_approval_requires_exact_recipient_binding`
-- `test_approval_requires_recipient_in_judgement`
+- `test_request_key_rejects_replay_within_same_mandate` — same mandate, same `request_key` twice → second call reverts with `"request_key already used for this mandate"`.
+- `test_request_key_is_scoped_per_mandate` — two different mandates using the identical `request_key` each get their own payment id, and `latest_payment_for` resolves the correct one per mandate.
+
+Updated:
+
+- `test_request_payment_reserves_budget_and_indexes_key` now asserts `latest_payment_for(mandate_id, "invoice-1")`.
 
 Current local verification:
 
-- `pytest tests/direct/ -q`: `42 passed`
+- `pytest tests/direct/ -q`: `44 passed`
 - `genvm-lint check contracts/agent_mandate_firewall.py --json`: `ok: true`
 - `genvm-lint check examples/mandate_wallet_consumer.py --json`: `ok: true`
 
 ## Deployment
 
-Patched StudioNet contract:
-
-`0x34075eF5314858d5fF802bbAd3c4905b52eE1f53`
-
-Explorer:
-
-https://explorer-studio.genlayer.com/address/0x34075eF5314858d5fF802bbAd3c4905b52eE1f53
-
-Live transaction evidence:
-
-- Deploy: `0x1cfecb4db88c06c635efcf4ec9d848d6651b6f4e3ba86167ca17aa4eb568f6a7`
-- `open_mandate`: `0xaeb0e3fa725950d7c664031d2478c5c8e484a41e58f2176957dd2519df8f7b0b`
-- `fund_mandate`: `0xe82fdff002ab0a49dd430bcaa4677fcd3ef26f7d6198563487a56cc89bdd937b`
-- `pause_mandate`: `0x91b94f53d30fbf97b163be976e68bbf456fdd73e1962bd5cdfd67fbc39a84995`
-- `resume_mandate`: `0x7c9740a1122cd2c7df02ddad54c75793667d48e580183165cc22acfdf4dabc35`
-- `request_payment`: `0x40c2552808c6c55e0e18e820dac6f051e28cebd1855259b9812f11f811709a7e`
-- `resolve_payment`: `0x9c0bbf51b52d5dd894b8385c92fe137eaec51ee1b4cf46c8d6c6910eb535da2e`
-- `withdraw`: `0x4ecc9e709ed1dcd6baffcb99acd0f08b1fc80c375b0d47ef3459ab8470d1bec9`
-- `reclaim_available`: `0xc20e28dd8f9f3ad4259e40c7b7231d82c8b29b1472db842866d619ec0684770a`
-
-Live resolved payment evidence:
-
-- Payment id: `amf-p-1`
-- Evidence URL: `https://raw.githubusercontent.com/Ifem1/Agent-Mandate-Firewall/main/evidence/example-domain-payment.txt`
-- Resolved status: `APPROVED`
-- Confidence: `HIGH`
-- Requested amount: `1`
-- Approved amount: `1`
-- Recipient: `0xa24Ddf60F3a76Ce6f3d491B657b7965Ff8cc6375`
-- Approved recipient: `0xa24Ddf60F3a76Ce6f3d491B657b7965Ff8cc6375`
-- Final status after withdrawal: `WITHDRAWN`
+Not yet redeployed. The previously reviewed deployment (`0x34075eF5314858d5fF802bbAd3c4905b52eE1f53`) still runs the pre-fix contract and does not have this patch. A fresh StudioNet deploy + live write/read exercise (matching the pattern used for the prior round) is needed before resubmission so the deployed bytecode matches this repository. That requires the deployer's funded key, which is not available in this environment — deploy and re-run `scripts/live-exercise.mjs` (or the equivalent write sequence) from your machine, then record the new contract address and transaction hashes here and in `SUBMISSION_PACKAGE.md`.

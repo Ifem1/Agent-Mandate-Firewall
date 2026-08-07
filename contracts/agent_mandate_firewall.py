@@ -473,6 +473,9 @@ class AgentMandateFirewall(gl.Contract):
         clean_key = _clean_text(request_key, 120)
         if clean_key == "":
             clean_key = clean_mandate_id + ":" + str(self.next_payment_id)
+        scoped_key = clean_mandate_id + "\x1f" + clean_key
+        if scoped_key in self.latest_payment_by_key:
+            raise gl.vm.UserError("request_key already used for this mandate")
 
         payment_id = "amf-p-" + str(self.next_payment_id)
         self.payments[payment_id] = PaymentRecord(
@@ -500,7 +503,7 @@ class AgentMandateFirewall(gl.Contract):
         mandate.available = mandate.available - requested
         mandate.reserved = mandate.reserved + requested
         mandate.payments_count = mandate.payments_count + u256(1)
-        self.latest_payment_by_key[clean_key] = payment_id
+        self.latest_payment_by_key[scoped_key] = payment_id
         self.next_payment_id = self.next_payment_id + u256(1)
         return payment_id
 
@@ -672,11 +675,13 @@ class AgentMandateFirewall(gl.Contract):
         return payment.approved_amount
 
     @gl.public.view
-    def latest_payment_for(self, request_key: str) -> str:
+    def latest_payment_for(self, mandate_id: str, request_key: str) -> str:
+        clean_mandate_id = _clean_text(mandate_id, 80)
         clean_key = _clean_text(request_key, 120)
-        if clean_key not in self.latest_payment_by_key:
+        scoped_key = clean_mandate_id + "\x1f" + clean_key
+        if scoped_key not in self.latest_payment_by_key:
             return ""
-        return self.latest_payment_by_key[clean_key]
+        return self.latest_payment_by_key[scoped_key]
 
     @gl.public.view
     def get_config(self) -> dict:

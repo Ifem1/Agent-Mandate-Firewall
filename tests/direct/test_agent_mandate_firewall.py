@@ -193,7 +193,36 @@ def test_request_payment_reserves_budget_and_indexes_key(direct_deploy, direct_v
     assert mandate["reserved"] == 120
     assert mandate["payments_count"] == 1
     assert payment["status"] == "PENDING"
-    assert contract.latest_payment_for("invoice-1") == payment_id
+    assert contract.latest_payment_for(mandate_id, "invoice-1") == payment_id
+
+
+def test_request_key_rejects_replay_within_same_mandate(
+    direct_deploy, direct_vm, direct_alice, direct_bob
+):
+    contract = deploy_firewall(direct_deploy)
+    mandate_id = open_mandate(direct_vm, contract, direct_alice, value=1000, max_payment=1000)
+    request_payment(
+        direct_vm, contract, direct_alice, mandate_id, direct_bob, amount=100, request_key="invoice-1"
+    )
+    with direct_vm.expect_revert("request_key already used for this mandate"):
+        request_payment(
+            direct_vm, contract, direct_alice, mandate_id, direct_bob, amount=100, request_key="invoice-1"
+        )
+
+
+def test_request_key_is_scoped_per_mandate(direct_deploy, direct_vm, direct_alice, direct_bob):
+    contract = deploy_firewall(direct_deploy)
+    mandate_a = open_mandate(direct_vm, contract, direct_alice, value=1000, max_payment=1000)
+    mandate_b = open_mandate(direct_vm, contract, direct_alice, value=1000, max_payment=1000)
+    payment_a = request_payment(
+        direct_vm, contract, direct_alice, mandate_a, direct_bob, amount=100, request_key="invoice-1"
+    )
+    payment_b = request_payment(
+        direct_vm, contract, direct_alice, mandate_b, direct_bob, amount=100, request_key="invoice-1"
+    )
+    assert payment_a != payment_b
+    assert contract.latest_payment_for(mandate_a, "invoice-1") == payment_a
+    assert contract.latest_payment_for(mandate_b, "invoice-1") == payment_b
 
 
 def test_unknown_payment_reads_fail_closed(direct_deploy):

@@ -62,7 +62,7 @@ Writes:
 - `fund_mandate(mandate_id)` payable
 - `pause_mandate(mandate_id)`
 - `resume_mandate(mandate_id)`
-- `request_payment(mandate_id, amount, recipient, purpose, evidence_url, request_key="")`
+- `request_payment(mandate_id, amount, recipient, purpose, evidence_url, request_key="")` — `request_key` is scoped per mandate and must be unique within that mandate; reusing a key on the same mandate reverts with "request_key already used for this mandate".
 - `resolve_payment(payment_id)`
 - `withdraw(payment_id)`
 - `reclaim_available(mandate_id, amount)`
@@ -74,7 +74,7 @@ Views:
 - `get_mandate(mandate_id)`
 - `get_payment(payment_id)`
 - `withdrawable(payment_id, account)`
-- `latest_payment_for(request_key)`
+- `latest_payment_for(mandate_id, request_key)`
 - `get_config()`
 
 ## Consumer
@@ -102,7 +102,7 @@ class IAgentMandateFirewall:
         def payment_status(self, payment_id: str) -> str: ...
         def get_payment(self, payment_id: str) -> dict: ...
         def withdrawable(self, payment_id: str, account: str) -> u256: ...
-        def latest_payment_for(self, request_key: str) -> str: ...
+        def latest_payment_for(self, mandate_id: str, request_key: str) -> str: ...
 
     class Write:
         def request_payment(
