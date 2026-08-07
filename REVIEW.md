@@ -27,9 +27,9 @@ After:
 Changed in `contracts/agent_mandate_firewall.py`:
 
 - `request_payment`: computes `scoped_key = clean_mandate_id + "\x1f" + clean_key`, reverts if `scoped_key` already exists in `latest_payment_by_key`, and stores under `scoped_key` instead of the raw key.
-- `latest_payment_for(mandate_id, request_key)`: new signature, resolves against the scoped key.
+- `latest_payment_for(mandate_id, request_key)`: new two-argument signature, resolves against the scoped key.
 
-Updated call sites and docs to match the new `latest_payment_for` signature: `README.md`, `examples/mandate_wallet_consumer.py`, `scripts/live-exercise.mjs`, `tests/direct/test_agent_mandate_firewall.py`.
+Updated call sites and docs to match the new signature: `README.md`, `examples/mandate_wallet_consumer.py`, `scripts/live-exercise.mjs`, `tests/direct/test_agent_mandate_firewall.py`.
 
 ## Regression Tests
 
@@ -42,7 +42,7 @@ Updated:
 
 - `test_request_payment_reserves_budget_and_indexes_key` now asserts `latest_payment_for(mandate_id, "invoice-1")`.
 
-Current local verification:
+Local verification:
 
 - `pytest tests/direct/ -q`: `44 passed`
 - `genvm-lint check contracts/agent_mandate_firewall.py --json`: `ok: true`
@@ -50,4 +50,41 @@ Current local verification:
 
 ## Deployment
 
-Not yet redeployed. The previously reviewed deployment (`0x34075eF5314858d5fF802bbAd3c4905b52eE1f53`) still runs the pre-fix contract and does not have this patch. A fresh StudioNet deploy + live write/read exercise (matching the pattern used for the prior round) is needed before resubmission so the deployed bytecode matches this repository. That requires the deployer's funded key, which is not available in this environment — deploy and re-run `scripts/live-exercise.mjs` (or the equivalent write sequence) from your machine, then record the new contract address and transaction hashes here and in `SUBMISSION_PACKAGE.md`.
+New StudioNet contract (patched, this fix):
+
+`0xD5259E2c6e2D0433e47d775769085de3A09ADc4c`
+
+Explorer:
+
+https://explorer-studio.genlayer.com/address/0xD5259E2c6e2D0433e47d775769085de3A09ADc4c
+
+Live transaction evidence:
+
+- Deploy: `0xa6032c2e5353a05cb90781bcf6c5f06c9851714a093e7673950f1056cb6266ca`
+- `open_mandate`: `0xb52ab7590d43ca1e947bf72bfa4745edf55f873f5d973c1b596cc8d3da64c038`
+- `fund_mandate`: `0xee58ce5feec872ed274c69cb45c502ae2ed79bb46789a49b1d18520f4fa6f6ab`
+- `pause_mandate`: `0x7e1c02f2ff103379825a672e9800671049658f5d036a6018b8a16815d93419ee`
+- `resume_mandate`: `0x6b2d12e8af0b81682b063382394a777be1ed6bde800d3c8870cdd6ce7955f0ec`
+- `request_payment`: `0x5ede6634a972bf4851824cb5491d39212b30b4e802241a9c8bc34c5cd2c5130d`
+- `reclaim_available`: `0x852c2469c391d12084b33cec19605051ab85679c9eb2dc0a4a9348d18bcd5a06`
+- `resolve_payment` (APPROVED): `0x115d305061529300ed44eec81800b0a17a8b5104986c8a8d6e8cfdb271c0ce54`
+- `withdraw`: `0x346dceb78cdac23150b629c121fdddc7e86f66a03fe6a9afdfc4244575f6d5dd`
+
+Live resolved payment evidence:
+
+- Payment id: `amf-p-1`
+- Evidence URL: `https://raw.githubusercontent.com/Ifem1/Agent-Mandate-Firewall/main/evidence/example-domain-payment.txt`
+- Resolved status: `APPROVED`
+- Confidence: `HIGH`
+- Requested amount: `1` wei
+- Approved amount: `1` wei
+- Recipient: `0xc5b5755fc0338684346380c1d16e78049273bc97`
+- Approved recipient: `0xc5b5755fc0338684346380c1d16e78049273bc97`
+- Merchant summary: `Example Domain Documentation Service - documentation verification`
+- Policy reason: `Evidence identifies the public documentation check service, exact amount of 1 wei, matching recipient address, and matching purpose; this fits the mandate for tiny payments for public web documentation checks.`
+- Final status after withdrawal: `WITHDRAWN`
+- `withdrawn: true`, `approved_amount: 0` (zeroed after payout)
+
+## Notes on UNDETERMINED Rounds
+
+Several `resolve_payment` calls returned `UNDETERMINED` with `MAJORITY_DISAGREE` before the successful round. This is normal StudioNet behavior: when validators fetch the same evidence URL and run the same prompt independently, transient consensus rounds can fail to reach quorum before eventually succeeding. The contract is retryable by design — `UNDETERMINED` writes no state, so any caller can re-invoke `resolve_payment`. This is documented in the README's honest limits section.
